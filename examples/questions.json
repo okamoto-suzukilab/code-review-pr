@@ -1,0 +1,19 @@
+{
+  "questions": [
+    {
+      "topic": "intent",
+      "question": "releaseTask の fetch に keepalive: true を追加した意図は何だと考えますか。PRタイトルと差分を根拠に説明してください。",
+      "files": ["src/releaseTask.ts"]
+    },
+    {
+      "topic": "behavior",
+      "question": "releaseTask のリクエスト送信直後にページを離れた場合、この変更はリクエストの扱いをどのように変えますか。送信の継続とサーバー処理の完了保証を分けて説明してください。",
+      "files": ["src/releaseTask.ts"]
+    },
+    {
+      "topic": "risk",
+      "question": "keepalive: true を指定してもタスク解放が完了しない可能性がある条件を1つ挙げ、その条件を確認するテストを提案してください。",
+      "files": ["src/releaseTask.ts"]
+    }
+  ]
+}

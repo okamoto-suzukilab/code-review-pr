@@ -1,0 +1,19 @@
+{
+  "pull_request": {
+    "title": "ページを離れる際のタスク解放リクエストを継続する",
+    "state": "open",
+    "draft": false,
+    "changed_files": 1,
+    "head": {"sha": "1234567890abcdef1234567890abcdef12345678"},
+    "base": {"sha": "abcdef1234567890abcdef1234567890abcdef12", "repo": {"full_name": "demo/example"}}
+  },
+  "files": [
+    {
+      "filename": "src/releaseTask.ts",
+      "status": "modified",
+      "additions": 2,
+      "deletions": 1,
+      "patch": "@@ -1,5 +1,6 @@\n export function releaseTask(taskId: string) {\n   return fetch(`/api/tasks/${taskId}/release`, {\n-    method: 'POST'\n+    method: 'POST',\n+    keepalive: true\n   });\n }"
+    }
+  ]
+}
