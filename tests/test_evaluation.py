@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 from pr_understanding.analysis import analyze_changes
 from pr_understanding.answer_cli import main as answer_main
 from pr_understanding.comments import render_comment
-from pr_understanding.evaluation import feedback_marker, generate_feedback, parse_answer, run_answer
+from pr_understanding.evaluation import feedback_marker, generate_feedback, parse_answers, run_answer
 from pr_understanding.github import GitHub, MARKER
 from pr_understanding.http import AppError
 from pr_understanding.llm import OpenAIProvider
@@ -40,7 +40,7 @@ class SnapshotTests(unittest.TestCase):
         sample, analysis, questions, snapshot = fixture()
         body = render_comment(analysis, questions, snapshot)
         self.assertEqual(decode_snapshot(body, "demo/example", 1), snapshot)
-        self.assertIn(f"/answer {snapshot['set_id']} Q1", body)
+        self.assertIn(f"/answer {snapshot['set_id']}\nQ1：", body)
         self.assertEqual(restore_evidence(snapshot, snapshot["questions"][0], sample["files"])[0]["patch"], sample["files"][0]["patch"])
 
     def test_wrong_repository_pr_or_modified_question_is_rejected(self):
@@ -67,15 +67,32 @@ class SnapshotTests(unittest.TestCase):
 
 class AnswerParsingTests(unittest.TestCase):
     def test_multiline_answer_preserves_its_text(self):
-        self.assertEqual(parse_answer("/answer 0123456789abcdef Q2\nページ離脱時の\n送信を続けます。"),
-                         ("0123456789abcdef", "Q2", "ページ離脱時の\n送信を続けます。"))
+        self.assertEqual(parse_answers("/answer 0123456789abcdef Q2\nページ離脱時の\n送信を続けます。"),
+                         ("0123456789abcdef", [("Q2", "ページ離脱時の\n送信を続けます。")]))
 
-    def test_missing_set_id_invalid_question_empty_long_and_multiple_answers_are_rejected(self):
-        for body in ("/answer Q1 answer", "/answer 0123456789abcdef Q4 answer", "/answer 0123456789abcdef Q1 ",
-                     "/answer 0123456789abcdef Q1 " + "a" * 4001,
-                     "/answer 0123456789abcdef Q1 one\n/answer 0123456789abcdef Q2 two"):
-            with self.subTest(body=body[:40]), self.assertRaises(AnswerError):
-                parse_answer(body)
+    def test_shared_command_accepts_multiple_answers_and_common_separators(self):
+        for separator in (" ", ":", "：", ";", "；"):
+            with self.subTest(separator=separator):
+                body = f"/answer 0123456789abcdef\nQ1{separator}目的\nQ2{separator}動作\nQ3{separator}境界"
+                self.assertEqual(parse_answers(body), ("0123456789abcdef", [("Q1", "目的"), ("Q2", "動作"), ("Q3", "境界")]))
+
+    def test_original_user_comment_with_repeated_commands_is_accepted(self):
+        body = "/answer 0123456789abcdef Q1；taskidがからの時にエラーが発生する。\r\n/answer 0123456789abcdef Q2 : POST\r\n/answer 0123456789abcdef Q3 : 記号"
+        self.assertEqual(parse_answers(body)[1], [("Q1", "taskidがからの時にエラーが発生する。"), ("Q2", "POST"), ("Q3", "記号")])
+
+    def test_invalid_answers_report_the_specific_problem(self):
+        cases = [
+            ("/answer Q1 answer", "設問セットID"),
+            ("/answer 0123456789abcdef Q4 answer", "Q4"),
+            ("/answer 0123456789abcdef Q1 ", "Q1の回答が空"),
+            ("/answer 0123456789abcdef Q1 " + "a" * 4001, "Q1の回答が4000文字"),
+            ("/answer 0123456789abcdef Q1 one\nQ1 two", "Q1が重複"),
+            ("/answer 0123456789abcdef Q1 one\n/answer 0000000000000000 Q2 two", "設問セットIDが混在"),
+            ("/answer 0123456789abcdef Q1回答", "Q1の後"),
+        ]
+        for body, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(AnswerError, message):
+                parse_answers(body)
 
 
 class FeedbackTests(unittest.TestCase):
@@ -131,6 +148,33 @@ class AnswerServiceTests(unittest.TestCase):
         self.assertIn("#issuecomment-9", body)
         self.github.publish_comment.assert_called_once_with(body, None)
 
+    def test_multiple_answers_are_evaluated_separately_in_one_reply(self):
+        self.source["body"] = f"/answer {self.snapshot['set_id']}\nQ1：目的\nQ2；動作\nQ3: 境界"
+        self.event["comment"] = copy.deepcopy(self.source)
+        body = run_answer(self.github, self.factory, self.event, dry_run=False)
+        contexts = [json.loads(call.args[1]) for call in self.provider.generate_json.call_args_list]
+        self.assertEqual([(c["question"]["id"], c["answer"]) for c in contexts], [("Q1", "目的"), ("Q2", "動作"), ("Q3", "境界")])
+        self.assertEqual(body.count("## 🤖 Code Understanding Feedback"), 1)
+        self.github.publish_comment.assert_called_once_with(body, None)
+
+    def test_invalid_second_answer_posts_actionable_notice_without_evaluating_first(self):
+        self.source["body"] += "\nQ2："
+        self.event["comment"] = copy.deepcopy(self.source)
+        body = run_answer(self.github, self.factory, self.event, dry_run=False)
+        self.assertIn("回答形式の確認", body)
+        self.assertIn("Q2の回答が空", body)
+        self.assertIn(f"/answer {self.snapshot['set_id']}", body)
+        self.assertNotIn("Code Understanding Feedback", body)
+        self.factory.assert_not_called()
+
+    def test_invalid_feedback_for_later_answer_does_not_publish_partial_evaluation(self):
+        self.source["body"] += "\nQ2：動作"
+        self.event["comment"] = copy.deepcopy(self.source)
+        self.provider.generate_json.side_effect = [json.dumps(FEEDBACK), '{}']
+        with self.assertRaises(AppError):
+            run_answer(self.github, self.factory, self.event, dry_run=False)
+        self.github.publish_comment.assert_not_called()
+
     def test_preview_does_not_publish(self):
         self.assertIn("ヒント", run_answer(self.github, self.factory, self.event))
         self.github.publish_comment.assert_not_called()
@@ -152,7 +196,7 @@ class AnswerServiceTests(unittest.TestCase):
                     self.source["body"] = "/answer Q1 回答です。"
                 self.event["comment"] = copy.deepcopy(self.source)
                 body = run_answer(self.github, self.factory, self.event, dry_run=False)
-                self.assertIn("Code Understanding Feedback", body)
+                self.assertIn("回答形式の確認", body)
                 self.factory.assert_not_called()
                 self.github.publish_comment.assert_called_once()
 
@@ -224,7 +268,7 @@ class AnswerServiceTests(unittest.TestCase):
 class AnswerIntegrationTests(unittest.TestCase):
     def test_http_boundary_posts_once_and_reanswer_creates_separate_feedback(self):
         sample, analysis, questions, snapshot = fixture()
-        source = {"id": 9, "body": f"/answer {snapshot['set_id']} Q1 サーバーで処理を必ず完了します。",
+        source = {"id": 9, "body": f"/answer {snapshot['set_id']}\nQ1：サーバーで処理を必ず完了します。\nQ2：送信を継続します。\nQ3：境界を確認します。",
                   "user": {"login": "owner", "type": "User"}, "issue_url": "https://api.github.com/repos/demo/example/issues/1"}
         comments = [{"id": 8, "body": render_comment(analysis, questions, snapshot), "user": {"login": "github-actions[bot]"}}]
         inference_calls = []
@@ -254,16 +298,17 @@ class AnswerIntegrationTests(unittest.TestCase):
         factory = lambda: OpenAIProvider(http, "test-model")
         body = run_answer(github, factory, event, dry_run=False)
         self.assertIn(feedback_marker(9), body)
+        self.assertEqual([json.loads(call["messages"][1]["content"])["question"]["id"] for call in inference_calls], ["Q1", "Q2", "Q3"])
         self.assertIsNone(run_answer(github, factory, event, dry_run=False))
         self.assertEqual(len(comments), 2)
-        self.assertEqual(len(inference_calls), 1)
+        self.assertEqual(len(inference_calls), 3)
         source["id"] = 11
         event["comment"] = copy.deepcopy(source)
         original_request = http.request.side_effect
         http.request.side_effect = lambda method, path, payload=None: source if path.endswith("/comments/11") else original_request(method, path, payload)
         self.assertIn(feedback_marker(11), run_answer(github, factory, event, dry_run=False))
         self.assertEqual(len(comments), 3)
-        self.assertEqual(len(inference_calls), 2)
+        self.assertEqual(len(inference_calls), 6)
 
 
 class AnswerCliTests(unittest.TestCase):
