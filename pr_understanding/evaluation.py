@@ -36,16 +36,55 @@ def feedback_marker(comment_id):
     return f"<!-- pr-understanding-feedback:v1:{comment_id} -->"
 
 
-def parse_answer(body):
-    match = re.fullmatch(r"/answer[ \t]+([a-f0-9]{16})[ \t]+(Q[123])\s+(.+)", body.strip(), re.DOTALL)
-    if not match:
-        raise AnswerError("回答形式は /answer 設問セットID Q1 回答内容 です。最新の設問コメントにある入力例を使ってください。")
-    answer = match[3].strip()
-    if not 1 <= len(answer) <= 4000:
-        raise AnswerError("回答は1〜4000文字で、新しいコメントに1問ずつ投稿してください。")
-    if re.search(r"^/answer\b", answer, re.MULTILINE):
-        raise AnswerError("1コメントにつき1問だけ回答してください。")
-    return match[1], match[2], answer
+def parse_answers(body):
+    set_id = None
+    answers = []
+    question_id = None
+    answer_lines = []
+
+    def finish_answer():
+        if question_id is None:
+            return
+        answer = "\n".join(answer_lines).strip()
+        if not answer:
+            raise AnswerError(f"{question_id}の回答が空です。Q番号の後に回答を書いてください。")
+        if len(answer) > 4000:
+            raise AnswerError(f"{question_id}の回答が4000文字を超えています。短くして再投稿してください。")
+        answers.append((question_id, answer))
+
+    for line in body.strip().splitlines():
+        if line.startswith("/answer"):
+            command = re.fullmatch(r"/answer[ \t]+([a-f0-9]{16})(?:[ \t]+(.*))?", line)
+            if not command:
+                raise AnswerError("/answerの後に16桁の設問セットIDが必要です。最新の設問コメントからコピーしてください。")
+            if set_id is not None and command[1] != set_id:
+                raise AnswerError("設問セットIDが混在しています。すべて最新の同じIDに揃えてください。")
+            set_id = command[1]
+            line = command[2] or ""
+        elif set_id is None:
+            raise AnswerError("冒頭に /answer と設問セットIDを書いてください。")
+        heading = re.match(r"^[ \t]*(Q[0-9]+)(.*)$", line)
+        if heading:
+            finish_answer()
+            question_id = heading[1]
+            if question_id not in {"Q1", "Q2", "Q3"}:
+                raise AnswerError(f"{question_id}は設問にありません。Q1・Q2・Q3を使ってください。")
+            if any(previous == question_id for previous, _ in answers):
+                raise AnswerError(f"{question_id}が重複しています。1つの回答にまとめてください。")
+            remainder = heading[2]
+            if remainder and not re.match(r"^[\s:：;；]", remainder):
+                raise AnswerError(f"{question_id}の後に空白・改行・コロンなどの区切りを入れてください。")
+            answer_lines = [re.sub(r"^[ \t]*[:：;；]?[ \t]*", "", remainder)]
+        elif line.strip():
+            if question_id is None:
+                raise AnswerError("回答の前にQ番号が必要です。Q1：回答 のように書いてください。")
+            answer_lines.append(line)
+        elif question_id is not None:
+            answer_lines.append(line)
+    finish_answer()
+    if not answers:
+        raise AnswerError("回答が見つかりません。Q1：回答 のように、答えるQ番号と回答を書いてください。")
+    return set_id, answers
 
 
 def generate_feedback(provider, snapshot, question, answer, evidence):
@@ -75,19 +114,26 @@ def generate_feedback(provider, snapshot, question, answer, evidence):
         raise AppError("Invalid feedback JSON; nothing was posted.") from None
 
 
-def render_feedback(github, source, snapshot=None, question=None, feedback=None, notice=None):
+def render_feedback(github, source, snapshot=None, evaluations=None, notice=None):
     source_url = f"https://github.com/{github.repository}/pull/{github.number}#issuecomment-{source['id']}"
-    lines = [feedback_marker(source["id"]), "## 🤖 Code Understanding Feedback", "",
-             f"[回答コメント]({source_url})へのフィードバック", ""]
+    title = "回答形式の確認・再投稿の案内" if notice else "🤖 Code Understanding Feedback"
+    lines = [feedback_marker(source["id"]), f"## {title}", "",
+             f"[回答コメント]({source_url})への返信", ""]
     if notice:
-        lines.append(escape_text(notice))
+        lines.extend(["このコメントへの評価結果は投稿していません。", "", escape_text(notice), "",
+                      "以下の形式で**新しいコメント**を投稿してください。答える問だけ残せます。", ""])
+        set_id = snapshot["set_id"] if snapshot else "最新の設問コメントにある設問セットID"
+        lines.extend([f"```text\n/answer {set_id}\nQ1：ここに回答\nQ2：ここに回答\nQ3：ここに回答\n```", "",
+                      "1コメントで複数問に回答できます。Q番号の後は空白・改行・:・：・;・；で区切れます。",
+                      "設問やPRの更新についての案内がある場合は、再出題後の最新コメントを確認してください。"])
     else:
-        lines.extend([f"対象: {question['id']} / 設問セット `{snapshot['set_id']}` / コミット `{snapshot['head_sha']}`", "",
-                      f"**{STATUSES[feedback['status']]}**", ""])
-        for name, label in (("strengths", "理解できている点"), ("gaps", "補足が必要な点"), ("hints", "再回答のヒント")):
-            lines.extend([f"### {label}", ""])
-            lines.extend(["- " + escape_text(text) for text in feedback[name]] or ["今回の回答では追加の指摘はありません。"])
-            lines.append("")
+        lines.extend([f"設問セット `{snapshot['set_id']}` / コミット `{snapshot['head_sha']}`", ""])
+        for question, feedback in evaluations:
+            lines.extend([f"### {question['id']} — {STATUSES[feedback['status']]}", ""])
+            for name, label in (("strengths", "理解できている点"), ("gaps", "補足が必要な点"), ("hints", "再回答のヒント")):
+                lines.extend([f"**{label}**", ""])
+                lines.extend(["- " + escape_text(text) for text in feedback[name]] or ["今回の回答では追加の指摘はありません。"])
+                lines.append("")
         lines.extend(["再回答は同じ設問セットIDとQ番号を使い、新しいPRコメントで投稿してください。", "",
                       "AIのフィードバックには誤りが含まれる場合があります。差分と照らして確認してください。"])
     return "\n".join(lines) + "\n"
@@ -121,36 +167,41 @@ def run_answer(github, provider_factory, event, *, dry_run=True, excludes=DEFAUL
     if (pull_request.get("head", {}).get("repo") or {}).get("full_name", "").lower() != github.repository.lower():
         return None
     question_comment = github.find_comment()
-    snapshot = question = None
+    snapshot = None
     try:
         if not question_comment:
             raise AnswerError("設問がまだありません。出題Actionsを実行してから回答してください。")
-        set_id, question_id, answer = parse_answer(source["body"])
         snapshot = decode_snapshot(question_comment["body"], github.repository, github.number)
+        set_id, answers = parse_answers(source["body"])
         if snapshot["set_id"] != set_id:
             raise AnswerError("設問セットが更新されています。最新の設問コメントのIDを使って回答してください。")
         if revision(pull_request) != (snapshot["base_sha"], snapshot["head_sha"]):
             raise AnswerError("PRが出題後に更新されています。出題Actionsを再実行し、最新の設問へ回答してください。")
-        question = next(entry for entry in snapshot["questions"] if entry["id"] == question_id)
-        if any(fnmatch.fnmatchcase(path, pattern) for path in question["files"] for pattern in excludes):
-            raise AnswerError("対象ファイルが現在の除外設定に含まれます。設定を確認して再出題してください。")
-        evidence = restore_evidence(snapshot, question, github.fetch_files())
+        prepared = []
+        files = github.fetch_files()
+        for question_id, answer in answers:
+            question = next(entry for entry in snapshot["questions"] if entry["id"] == question_id)
+            if any(fnmatch.fnmatchcase(path, pattern) for path in question["files"] for pattern in excludes):
+                raise AnswerError(f"{question_id}の対象ファイルが現在の除外設定に含まれます。設定を確認して再出題してください。")
+            prepared.append((question, answer, restore_evidence(snapshot, question, files)))
         if revision(github.fetch_pull_request()) != revision(pull_request):
             raise AnswerError("PRが回答評価中に更新されました。最新の設問へ回答してください。")
-        feedback = generate_feedback(provider_factory(), snapshot, question, answer, evidence)
-        body = render_feedback(github, source, snapshot, question, feedback)
+        provider = provider_factory()
+        evaluations = [(question, generate_feedback(provider, snapshot, question, answer, evidence))
+                       for question, answer, evidence in prepared]
+        body = render_feedback(github, source, snapshot, evaluations)
     except AnswerError as exc:
-        body = render_feedback(github, source, notice=str(exc))
+        body = render_feedback(github, source, snapshot=snapshot, notice=str(exc))
     latest = github.fetch_pull_request()
     validate_pull_request(latest, github.repository)
     if revision(latest) != revision(pull_request):
-        body = render_feedback(github, source, notice="PRが評価中に更新されたため、評価を保留しました。最新の設問へ回答してください。")
+        body = render_feedback(github, source, snapshot=snapshot, notice="PRが評価中に更新されたため、評価を保留しました。最新の設問へ回答してください。")
     if not source_matches(github.fetch_comment(source["id"]), event, github):
         return None
     if question_comment:
         latest_questions = github.find_comment()
         if not latest_questions or latest_questions["body"] != question_comment["body"]:
-            body = render_feedback(github, source, notice="評価中に設問が更新されました。最新の設問へ回答してください。")
+            body = render_feedback(github, source, snapshot=snapshot, notice="評価中に設問が更新されました。最新の設問へ回答してください。")
     if not dry_run:
         if github.find_comment(feedback_marker(source["id"])):
             return None
