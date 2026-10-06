@@ -1,0 +1,41 @@
+name: PR understanding check
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-understanding-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  questions:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # The PR head must never execute with this job's write token or API key.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate and publish three questions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LLM_PROVIDER: openai
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MAX_DIFF_CHARS: ${{ vars.MAX_DIFF_CHARS || '24000' }}
+          EXCLUDE_GLOBS: ${{ vars.EXCLUDE_GLOBS }}
+        run: python -m pr_understanding --pr "$PR_NUMBER" --post
