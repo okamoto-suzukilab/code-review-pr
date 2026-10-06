@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import quote
 
 from .http import AppError
 
@@ -31,15 +32,22 @@ class GitHub:
                 break
         return files
 
-    def find_comment(self):
+    def find_comment(self, marker=MARKER):
         for page in range(1, 101):
             comments = self.http.request("GET", f"{self.root}/issues/{self.number}/comments?per_page=100&page={page}")
             for comment in comments:
-                if (comment.get("body") or "").startswith(MARKER + "\n") and comment["user"]["login"] == self.author:
+                if (comment.get("body") or "").startswith(marker + "\n") and comment["user"]["login"] == self.author:
                     return comment
             if len(comments) < 100:
                 return None
         raise AppError("Comment pagination limit reached; refusing to create a possible duplicate.")
+
+    def fetch_comment(self, comment_id):
+        return self.http.request("GET", f"{self.root}/issues/comments/{comment_id}")
+
+    def can_answer(self, login):
+        permissions = self.http.request("GET", f"{self.root}/collaborators/{quote(login, safe='')}/permission")
+        return permissions.get("permission") in {"write", "maintain", "admin"}
 
     def publish_comment(self, body: str, existing):
         if existing:

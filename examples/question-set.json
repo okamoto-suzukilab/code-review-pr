@@ -1,9 +1,10 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "version": 1,
   "repository": "demo/example",
   "pr_number": 1,
-  "head_sha": "1234567890abcdef1234567890abcdef12345678",
   "base_sha": "abcdef1234567890abcdef1234567890abcdef12",
+  "head_sha": "1234567890abcdef1234567890abcdef12345678",
   "questions": [
     {
       "id": "Q1",
@@ -29,5 +30,14 @@
         "src/releaseTask.ts"
       ]
     }
-  ]
+  ],
+  "evidence": [
+    {
+      "path": "src/releaseTask.ts",
+      "patch_chars": 184,
+      "sha256": "1ae00b780cfc83de4b819561e16c5d1f2b44f5a60c433513c3af2ab4536e87ef",
+      "partial": false
+    }
+  ],
+  "set_id": "cb661ee524ce6975"
 }

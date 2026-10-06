@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import asdict
 from pathlib import Path
 
 from .analysis import DEFAULT_EXCLUDES, analyze_changes
@@ -14,6 +13,7 @@ from .http import AppError, JsonHttp
 from .llm import FixtureProvider, OllamaProvider, OpenAIProvider
 from .questions import generate_questions
 from .service import run_check
+from .snapshots import build_snapshot
 
 
 def require_env(name):
@@ -67,7 +67,8 @@ def main(argv=None):
             fixture = json.loads((examples / "pull_request.json").read_text(encoding="utf-8"))
             analysis = analyze_changes(fixture["pull_request"], fixture["files"])
             questions = generate_questions(FixtureProvider(examples / "questions.json"), analysis)
-            body = render_comment(analysis, questions)
+            snapshot = build_snapshot(analysis, questions, args.repo or "demo/example", args.pr or 1)
+            body = render_comment(analysis, questions, snapshot)
         else:
             if not args.repo or not args.pr:
                 raise AppError("Provide --repo OWNER/REPO and --pr NUMBER.")
@@ -87,11 +88,8 @@ def main(argv=None):
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(body, encoding="utf-8")
         args.json_output.parent.mkdir(parents=True, exist_ok=True)
-        args.json_output.write_text(json.dumps({
-            "schema_version": 1, "repository": args.repo or "demo/example",
-            "pr_number": args.pr or 1, "head_sha": analysis["head_sha"],
-            "base_sha": analysis["base_sha"], "questions": [asdict(question) for question in questions],
-        }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        snapshot = build_snapshot(analysis, questions, args.repo or "demo/example", args.pr or 1)
+        args.json_output.write_text(json.dumps({"schema_version": 2, **snapshot}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print("Posted understanding check." if args.post else "Preview generated; no comment posted.")
         return 0
     except (AppError, OSError, ValueError, KeyError, TypeError) as exc:
