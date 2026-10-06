@@ -119,9 +119,14 @@ Actionsの **Answer understanding feedback** が実行され、通常のPRコメ
 ### 初回利用と条件
 
 1. 回答評価機能のPRをデフォルトブランチ `main` にマージします。
-2. 既存のPRでは **PR understanding check** を再実行するか、追加pushで出題し直します。
+2. 既存のPRでは **PR understanding check → Run workflow** を使うか、追加pushで出題し直します。
    以前の出題には設問セットの保存情報がないため、再出題が必要です。
 3. 出題された回答形式をコピーし、PRへコメントします。
+
+既存PRを最新の出題コードで実行する場合は、Actions → **PR understanding check** → **Run workflow** を開き、
+ブランチに `main`、入力にPR番号を指定してください。手動実行はデフォルトブランチ限定です。
+過去の実行の「Re-run jobs」は当時のイベントとベースコミットを再利用するため、機能導入前の実行では
+新しい設問形式にならない場合があります。機能導入後はRun workflowか追加pushで新しい実行を作ってください。
 
 既存の `OPENAI_API_KEY` と `LLM_MODEL` をそのまま使用します。新しいSecretは不要です。
 評価対象は同じリポジトリ内のopen・非draftのPRです。回答者はリポジトリへのwrite・maintain・admin権限を持つ
