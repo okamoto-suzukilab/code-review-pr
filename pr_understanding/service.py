@@ -3,6 +3,7 @@ from .comments import render_comment
 from .github import revision, validate_pull_request
 from .http import AppError
 from .questions import generate_questions
+from .snapshots import build_snapshot
 
 
 def run_check(github, provider, *, dry_run=True, max_chars=24000, max_files=40, excludes=None):
@@ -16,7 +17,10 @@ def run_check(github, provider, *, dry_run=True, max_chars=24000, max_files=40, 
     if revision(github.fetch_pull_request()) != revision(pull_request):
         raise AppError("PR changed while fetching its diff; rerun for the latest revision.")
     questions = generate_questions(provider, analysis)
-    body = render_comment(analysis, questions)
+    snapshot = build_snapshot(analysis, questions, github.repository, github.number)
+    body = render_comment(analysis, questions, snapshot)
+    if len(body.encode("utf-8")) > 60000:
+        raise AppError("Question comment exceeds the safe size limit; reduce MAX_FILES.")
     if not dry_run:
         existing = github.find_comment()
         latest = github.fetch_pull_request()

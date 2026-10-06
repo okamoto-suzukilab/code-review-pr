@@ -164,7 +164,7 @@ class GitHubTests(unittest.TestCase):
 class ServiceTests(unittest.TestCase):
     def setUp(self):
         self.fixture = sample()
-        self.github = Mock(repository="demo/example")
+        self.github = Mock(repository="demo/example", number=1)
         self.github.fetch_pull_request.return_value = self.fixture["pull_request"]
         self.github.fetch_files.return_value = self.fixture["files"]
         self.provider = FixtureProvider(EXAMPLES / "questions.json")

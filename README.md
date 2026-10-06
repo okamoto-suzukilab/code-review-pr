@@ -3,7 +3,8 @@
 対象リポジトリ: [okamoto-suzukilab/code-review-pr](https://github.com/okamoto-suzukilab/code-review-pr)
 
 GitHub PRの差分から、人間がコードを理解するための3問を日本語で生成し、PRコメントに投稿します。
-目的・動作の変化・境界条件／テストを1問ずつ出題します。回答の採点は将来拡張です。
+目的・動作の変化・境界条件／テストを1問ずつ出題します。
+PRコメントで回答すると、理解できている点・補足が必要な点・再回答のヒントを日本語で返します。
 
 Python 3.9以上、標準ライブラリのみ。DB・Webサーバー・pip installは不要です。
 
@@ -14,7 +15,9 @@ GitHub Actions → GitHub REST API → ファイル別diff解析
                            ├─ OpenAI / Chat Completions互換API
                            └─ Ollama /api/chat
                                       ↓
-                         JSON検証 → 3問 → PRコメント作成・更新
+                         JSON検証 → 3問＋設問セット保存 → PRコメント作成・更新
+                                      ↓
+                         /answer コメント → 回答評価 → フィードバック
 ```
 
 ## まずはキーなしで試す
@@ -88,6 +91,91 @@ fine-grained PATを使う場合は対象リポジトリへの **Pull requests: R
 `COMMENT_AUTHOR` をPAT所有者のGitHubログイン名へ設定します。プレビューだけならreadで足ります。
 Actionsの既定投稿者は `github-actions[bot]`。別の投稿者のコメントは更新しません。
 ローカルとActionsで投稿者が異なると、それぞれにコメントができます。
+
+## 回答とフィードバック（OpenAI / GitHub Actions）
+
+新しい出題コメントには「設問セットID」とコピーできる回答形式が表示されます。
+PRのConversationに、次の形式で**新しいコメント**を投稿してください。
+
+```text
+/answer 0123456789abcdef Q1 ページ離脱時にもタスク解放リクエストの送信を継続するためだと考えます。
+```
+
+`0123456789abcdef` は実際の設問セットIDに置き換えます。Q1〜Q3のいずれか1問、
+回答は1〜4000文字。コマンドの後に改行して回答を書くこともできます。
+`/answer Q1 回答` だけでは、PR更新前の同じQ番号と区別できないため受け付けません。
+
+Actionsの **Answer understanding feedback** が実行され、通常のPRコメントとして以下を返します。
+
+- 理解できている点
+- 補足が必要な点
+- 再回答のヒント
+
+判定は「理解できています」「補足して再回答してみましょう」「差分だけでは判断できません」の3種類です。
+点数と模範解答は生成しないよう指示しています。LLMの内容は機械的に完全保証できないため確認してください。
+改善して再回答する場合は、同じ設問セットIDとQ番号で新しいコメントを投稿します。
+回答コメントを編集しても評価は再実行されません。
+
+### 初回利用と条件
+
+1. 回答評価機能のPRをデフォルトブランチ `main` にマージします。
+2. 既存のPRでは **PR understanding check → Run workflow** を使うか、追加pushで出題し直します。
+   以前の出題には設問セットの保存情報がないため、再出題が必要です。
+3. 出題された回答形式をコピーし、PRへコメントします。
+
+既存PRを最新の出題コードで実行する場合は、Actions → **PR understanding check** → **Run workflow** を開き、
+ブランチに `main`、入力にPR番号を指定してください。手動実行はデフォルトブランチ限定です。
+過去の実行の「Re-run jobs」は当時のイベントとベースコミットを再利用するため、機能導入前の実行では
+新しい設問形式にならない場合があります。機能導入後はRun workflowか追加pushで新しい実行を作ってください。
+
+既存の `OPENAI_API_KEY` と `LLM_MODEL` をそのまま使用します。新しいSecretは不要です。
+評価対象は同じリポジトリ内のopen・非draftのPRです。回答者はリポジトリへのwrite・maintain・admin権限を持つ
+人間ユーザーに限定し、GitHub APIで権限を確認します。bot、通常の会話、fork PRは評価しません。
+そのため、一般の外部閲覧者が回答してもLLM API呼び出しは発生しません。
+
+### 出題と回答の取り違え防止
+
+設問コメント内に、repository・PR番号・base/head SHA・設問本文・参照ファイル・差分の指紋を
+HTMLコメントとして保存します。これは暗号化された情報ではありません。コード本文は保存せず、
+必要な差分をGitHub APIから再取得し、出題時の指紋と照合します。DBや別のストレージは不要です。
+
+- 設問セットIDはコミット・設問内容・差分の指紋から決定します。
+- 最新の出題コメントをbotの投稿者名とマーカーで確認し、その設問セットにだけ回答できます。
+- PR・設問が更新されていた場合は評価を止め、再出題／最新の回答形式を案内します。
+- 出題時に省略した差分を全体として評価しません。対象が現在の除外設定に入った場合もLLMへ送りません。
+- 評価済み回答には回答コメントIDのマーカーが付き、同じイベントの再実行ではLLMも投稿もスキップします。
+- 評価中に回答が編集された場合は投稿を止めます。新しいコメントとして再回答してください。
+- フィードバックには元の回答へのリンク、設問IDとコミットを表示します。
+
+回答ごとにLLM APIを1回呼びます。形式違反や古い設問への回答には、LLMを呼ばず案内を返します。
+既存の返信がある再実行もLLMを呼びません。API失敗・不正な評価JSONの場合はActionsが失敗し、
+不完全な評価を投稿しません。管理者はActionsから再実行できます。
+入力の回答本文と該当設問の差分は外部APIへ送信されます。
+
+### ローカルからのプレビュー
+
+GitHubのissue_commentイベントJSONをファイルへ保存し、通常の環境変数に加えて設定します。
+
+```sh
+export GITHUB_EVENT_PATH=/absolute/path/to/answer-event.json
+python3 -m pr_understanding.answer_cli --dry-run
+# 内容を確認後に投稿する場合
+python3 -m pr_understanding.answer_cli --post
+```
+
+出力は `work/feedback.md`。イベントの元コメントがGitHub上に存在し、投稿者・本文・PRが一致する必要があります。
+Actionsの出題者が `github-actions[bot]` なら、ローカル評価でも `COMMENT_AUTHOR=github-actions[bot]` にします。
+PATで評価を投稿すると投稿者が変わり、再実行で既存のフィードバックを検出できない場合があります。
+同じ投稿者のトークンを使用するのが推奨です。
+
+### workflowの実行境界
+
+`issue_comment: created` はデフォルトブランチ上のworkflowだけを実行します。
+checkoutはイベントの `github.sha` 固定です。回答本文はイベントファイルから読み込み、
+シェルやworkflowへ埋め込みません。PRのheadコードを実行する処理はありません。
+botの返信と編集イベントでは評価しないため、返信による無限ループを防ぎます。
+同じ回答の実行を直列化し、別の回答は並行処理できます。評価と出題の競合は投稿直前にも確認しますが、
+GitHub APIに原子的な条件付きコメント投稿がないため、最終確認直後の更新との競合余地は残ります。
 
 ## Ollamaへ切り替える
 
@@ -181,17 +269,20 @@ HTTPはlocalhostのみ許可し、それ以外のエンドポイントはHTTPS�
 | `questions.py` | 出題プロンプト、JSON Schema、設問の検証 |
 | `comments.py` | コメント整形 |
 | `service.py` | 取得→解析→生成→投稿の処理順序と更新検知 |
+| `snapshots.py` | 設問セットの保存・照合と評価用差分の復元 |
+| `evaluation.py` | 回答形式、回答者確認、LLM評価、重複防止、返信の整形 |
+| `answer_cli.py` | issue_commentイベントからの回答評価 |
 | `__main__.py` | 環境変数、CLI、ファイル出力 |
 | `http.py` | タイムアウト付きHTTP、秘密を含まないエラー |
 
 新しいLLMは `generate_json(instruction, context, schema) -> str` を実装し、
 `build_provider()` に分岐を追加します。GitHubや出題ロジックを変更する必要はありません。
 
-`questions.json` はschema_version、repository、PR番号、base/head SHA、設問ID（Q1〜Q3）・観点・本文・参照ファイルを保存します。
-将来はこの境界に `evaluation.py` を追加し、同じ `JsonGenerator` に回答と別の評価スキーマを渡せます。
-評価時は **repository + PR番号 + head SHA + question ID** をキーにし、設問を差分更新と取り違えないようにします。
-現状は再生成でコメントを上書きし、Actions上のJSONも永続保存しません。評価実装時には設問スナップショットの保存先、
-回答者認証、`issue_comment` のbotループ防止、評価基準を追加してください。`/answer` コマンドは未実装です。
+`questions.json` はschema_version=2、repository、PR番号、base/head SHA、set_id、
+設問ID（Q1〜Q3）・観点・本文・参照ファイル・差分の指紋を保存します。
+同じスナップショットをPRコメントにも保存し、Actions実行後も回答評価に利用できます。
+`evaluation.py` は出題と同じ `JsonGenerator` を使用し、評価専用のJSON Schemaとプロンプトを渡します。
+将来は回答履歴のダッシュボード、学習者ごとの記録、評価基準の調整をこの境界から追加できます。
 
 ## よくある問題
 
