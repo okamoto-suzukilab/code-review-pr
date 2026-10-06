@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 from pr_understanding.__main__ import build_provider, main
 from pr_understanding.analysis import analyze_changes
-from pr_understanding.comments import render_comment
+from pr_understanding.comments import escape_text, render_comment
 from pr_understanding.github import GitHub, MARKER
 from pr_understanding.http import AppError, JsonHttp, NoRedirect
 from pr_understanding.llm import FixtureProvider, OllamaProvider, OpenAIProvider
@@ -109,6 +109,13 @@ class QuestionTests(unittest.TestCase):
         self.assertNotIn("@everyone", comment)
         self.assertNotIn("[click](", comment)
         self.assertTrue(comment.startswith(MARKER + "\n"))
+
+    def test_function_name_quotes_are_preserved_as_readable_text(self):
+        self.assertEqual(escape_text("'releaseTask'関数"), "'releaseTask'関数")
+        self.assertEqual(escape_text('"releaseTask"関数'), '"releaseTask"関数')
+
+    def test_html_entities_are_not_broken_by_markdown_escaping(self):
+        self.assertEqual(escape_text("A & B < C > D"), "A &amp; B &lt; C &gt; D")
 
     def test_provider_receives_diff_as_data_and_no_credentials(self):
         fixture = sample()

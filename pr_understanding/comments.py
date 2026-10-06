@@ -6,8 +6,8 @@ from .github import MARKER
 
 def escape_text(text):
     text = " ".join(text.split())
-    text = html.escape(text).replace("@", "＠")
-    return re.sub(r"([\\`*_{}\[\]()#+.!|>~-])", r"\\\1", text)
+    text = re.sub(r"([\\`*_{}\[\]()#+.!|~-])", r"\\\1", text)
+    return html.escape(text, quote=False).replace("@", "＠")
 
 
 def render_comment(analysis, questions):
